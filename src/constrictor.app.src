@@ -1,7 +1,7 @@
 {application, constrictor,
  [
   {description, "Server that constrains the number of concurrently running resources"},
-  {vsn, "0.0.1"},
+  {vsn, git},
   {registered, []},
   {applications, [
                   kernel,

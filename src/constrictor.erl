@@ -1,43 +1,31 @@
-%% Copyright (c) 2012, Aircloak
-%% All rights reserved.
-%% 
-%% Redistribution and use in source and binary forms, 
-%% with or without modification, are permitted provided 
-%% that the following conditions are met:
-%% 
-%% - Redistributions of source code must retain the above 
-%%   copyright notice, this list of conditions and 
-%%   the following disclaimer.
-%%
-%% - Redistributions in binary form must reproduce the above 
-%%   copyright notice, this list of conditions and the 
-%%   following disclaimer in the documentation and/or other 
-%%   materials provided with the distribution.
-%%
-%% THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND 
-%% CONTRIBUTORS "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, 
-%% INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF 
-%% MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
-%% DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR 
-%% CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, 
-%% SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, 
-%% BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; 
-%% LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) 
-%% HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN 
-%% CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE 
-%% OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS 
-%% SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-%%
-%% @author Sebastian Probst Eide <sebastian@aircloak.com>
-%% @copyright 2012 Aircloak.com
+% License: Apache License, Version 2.0
+%
+% Copyright 2013 Aircloak
+%
+% Licensed under the Apache License, Version 2.0 (the "License");
+% you may not use this file except in compliance with the License.
+% You may obtain a copy of the License at
+%
+%     http://www.apache.org/licenses/LICENSE-2.0
+%
+% Unless required by applicable law or agreed to in writing, software
+% distributed under the License is distributed on an "AS IS" BASIS,
+% WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+% See the License for the specific language governing permissions and
+% limitations under the License.
 
-%% @doc Behaviour that ensures that no more than a certain
-%%      number of processes run concurrently.
+%% @author Sebastian Probst Eide <sebastian@aircloak.com>
+%% @copyright Copyright 2013 Aircloak
+%%
+%% @doc Mini server that ensures that no more than N processes
+%%      concurrently access a resource.
+%% @end
+
 -module(constrictor).
 
 %% API
 -export([
-  start_link/1,
+  start_link/2,
   stop/1,
   execute/2
 ]).
@@ -52,24 +40,31 @@
 %% @doc Start the constrictor server. It takes one
 %%      parameter which is the number of available
 %%      slots.
--spec start_link(pos_integer()) -> {ok, pid()}.
-start_link(Slots) when Slots > 0 ->
+-spec start_link(atom(), pos_integer()) -> {ok, pid()}.
+start_link(Name, Slots) when Slots > 0 ->
   Pid = spawn_link(?MODULE, receiver, [Slots]),
-  true = register(?MODULE, Pid),
+  true = register(Name, Pid),
   {ok, Pid};
-start_link(Num) ->
+start_link(_Name, Num) ->
   erlang:error({at_least_one_slot_is_required, Num}).
 
 %% @doc Termiantes the server
-stop(Pid) ->
-  Pid ! stop.
+stop(Pid) when is_pid(Pid) ->
+  erlang:error(please_stop_using_registered_name);
+stop(Name) when is_atom(Name) ->
+  Pid = whereis(Name),
+  unregister(Name),
+  Pid ! stop,
+  ok.
 
 %% @doc Takes a function to execute,
-%%      and executes it when the sufficient resources
+%%      and executes it when sufficient resources
 %%      are available.
 %%      Jobs are executed in first come first
 %%      serve basis.
 -spec execute(pid(), fun(() -> any())) -> any().
+execute(Name, Job) when is_atom(Name) ->
+  execute(whereis(Name), Job);
 execute(Pid, Job) ->
   Pid ! {job, self(), Job, now()},
   receive 
@@ -137,13 +132,21 @@ constrictor_test_() ->
 
       [{"constrictor:start_link requires at least one slot",
         [
-            ?_assertException(error, {at_least_one_slot_is_required, _}, start_link(0))
+            ?_assertException(error, {at_least_one_slot_is_required, _}, start_link(test_server, 0))
         ]
+      },
+
+      {"constrictor:stop requires registered name",
+        fun() ->
+          {ok, Pid} = start_link(test_server, 1),
+          ?assertException(error, please_stop_using_registered_name, stop(Pid)),
+          ?assertEqual(ok, stop(test_server))
+        end
       },
 
      {"constrictor:execute should restrict the execution of events",
         fun() ->
-            {ok, Pid} = start_link(1),
+            {ok, _Pid} = start_link(test_server, 1),
 
             Num = 4,
             WaitMs = 100,
@@ -152,7 +155,7 @@ constrictor_test_() ->
             This = self(),
             F = fun() ->
                     spawn(fun() ->
-                          execute(Pid, fun() ->
+                          execute(test_server, fun() ->
                                 timer:sleep(WaitMs),
                                 This ! done
                             end)
@@ -165,13 +168,13 @@ constrictor_test_() ->
             EndTime = now(),
             ActualWaitTime = timer:now_diff(EndTime, StartTime),
             ?assert(ActualWaitTime >= ExpectedMinWaitTime),
-            stop(Pid)
+            stop(test_server)
         end
       },
 
      {"constrictor:execute should execute tasks in parallel if possible",
         fun() ->
-            {ok, Pid} = start_link(4),
+            {ok, Pid} = start_link(test_server, 4),
             Num = 4,
             WaitMs = 100,
             ExpectedMinWaitTime = WaitMs * 1000,
@@ -196,7 +199,7 @@ constrictor_test_() ->
             io:format("ActualTime: ~p~n", [ActualWaitTime]),
             ?assert(ActualWaitTime >= ExpectedMinWaitTime),
             ?assert(ActualWaitTime =< ExpectedMaxTime),
-            stop(Pid)
+            stop(test_server)
         end
       }]
 
